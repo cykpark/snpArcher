@@ -1,0 +1,15 @@
+##############################
+# Variables you need to change
+##############################
+
+final_prefix: # Data prefix
+refgenome: # Reference genome
+populations: # Population names
+mutation_rate:
+generation_time:
+projections: # Projections for SFS generation
+pc_bounds: # Comma seperated MNL/ISL
+coordinate_bounds: # Comma seperated MNL/ISL
+repeats: # Number of GADMA2 repeats
+analysis: # Tagline for analysis
+spec: # Tagline for subspec

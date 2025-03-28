@@ -1,0 +1,215 @@
+import sys
+import os
+from pathlib import Path
+
+utils_path = (Path(workflow.main_snakefile).parent.parent.parent).resolve()
+if str(utils_path) not in sys.path:
+    sys.path.append(str(utils_path))
+
+import pandas as pd
+configfile: "config/config.yaml"
+
+
+rule all:
+    input:
+        html = expand("results/{refGenome}/{analysis}_analysis{spec}/{prefix}_inf.html", refGenome=config['refgenome'], prefix=config['final_prefix'], 
+            analysis = config['analysis'] if config['analysis'] else 'inf', spec = '/' + config['spec'] if config['spec'] else [])
+
+rule format_output:
+    """
+    Retrieve output data in html format
+    """
+    input:
+        eigenvec = "results/{refGenome}/QC/{prefix}.eigenvec" if Path("results/{refGenome}/QC/{prefix}.eigenvec") else [],
+        coords = "results/{refGenome}/QC/{prefix}.coords.txt" if Path("results/{refGenome}/QC/{prefix}.coords.txt") else [],
+        model_fit = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_inference.done/best_logLL_model.png",
+        model_fit_masked = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_inference_masked.done/best_logLL_model.png",
+        best_plot = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_best_model_plot.png",
+        estimates = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_output.csv",
+        best_plot_masked = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_best_model_plot_masked.png",
+        estimates_masked = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_output_masked.csv",
+        popfile = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}.popfile.txt",
+        eigenvec_filtered = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}.eigenvec",
+        eigenval_filtered = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}.eigenval",
+        intermediate_models = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_intermediates.csv",
+        intermediate_models_masked = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_intermediates_masked.csv"
+    params:
+        pops = config['populations'],
+        prefix = config['final_prefix'],
+        refGenome = config['refgenome']
+    output:
+        html = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_inf.html",
+        density = temp("results/{refGenome}/{analysis}_analysis{spec}/{prefix}_log-likelihood_density.png"),
+        density_masked = temp("results/{refGenome}/{analysis}_analysis{spec}/{prefix}_log-likelihood_density_masked.png")
+    conda:
+        "envs/html_env.yml"
+    script:
+        "scripts/html.py"
+
+rule pca:
+    input:
+        vcf = "results/{refGenome}/{prefix}_clean_snps.vcf.gz",
+        popfile_mixed = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}.popfile_mixed.txt"
+    params:
+        pops = config['populations'].split('/'),
+        prefix = config['final_prefix'],
+        refGenome = config['refgenome']
+    output:
+        eigenvec_filtered = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}.eigenvec",
+        eigenval_filtered = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}.eigenval",
+        bim = temp("results/{refGenome}/{analysis}_analysis{spec}/{prefix}_filtered.bim"),
+        fam = temp("results/{refGenome}/{analysis}_analysis{spec}/{prefix}_filtered.fam"),
+        bed_temp = temp("results/{refGenome}/{analysis}_analysis{spec}/{prefix}_filtered.bed"),
+        log = temp("results/{refGenome}/{analysis}_analysis{spec}/{prefix}_filtered.log"),
+        log2 = temp("results/{refGenome}/{analysis}_analysis{spec}/{prefix}.log")
+    conda:
+        "envs/plink_env.yml"
+    shell:
+        """
+        plink2 --vcf {input.vcf} --keep {input.popfile_mixed} --make-bed --out results/{wildcards.refGenome}/{wildcards.analysis}_analysis{wildcards.spec}/{wildcards.prefix}_filtered --allow-extra-chr --const-fid --bad-freqs --threads 25
+        plink2 --bfile results/{wildcards.refGenome}/{wildcards.analysis}_analysis{wildcards.spec}/{wildcards.prefix}_filtered --pca 10 --out results/{wildcards.refGenome}/{wildcards.analysis}_analysis{wildcards.spec}/{wildcards.prefix} --allow-extra-chr --const-fid --bad-freqs
+        """
+
+rule retrieve_output:
+    """
+    Plot best model and store model parameters for five best log-likelihood runs
+    """
+    input: 
+        result = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_inference.done",
+        result_masked = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_inference_masked.done",
+        best_demes = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_inference.done/best_logLL_model_demes_code.py.yml",
+        gadma_log = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_inference.done/GADMA.log",
+        best_demes_masked = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_inference_masked.done/best_logLL_model_demes_code.py.yml",
+        gadma_log_masked = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_inference_masked.done/GADMA.log"
+    params:
+        pops = config['populations'],
+        prefix = config['final_prefix'],
+        refGenome = config['refgenome'],
+        analysis = config['analysis'] if config['analysis'] else 'inf',
+        spec = '/' + config['spec'] if config['spec'] else [],
+        repeats = config['repeats']
+    output: 
+        best_plot = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_best_model_plot.png",
+        estimates = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_output.csv",
+        best_plot_masked = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_best_model_plot_masked.png",
+        estimates_masked = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_output_masked.csv",
+        intermediate_models = temp("results/{refGenome}/{analysis}_analysis{spec}/{prefix}_intermediates.csv"),
+        intermediate_models_masked = temp("results/{refGenome}/{analysis}_analysis{spec}/{prefix}_intermediates_masked.csv")
+    conda: 
+        "envs/demes_env.yml"
+    script:
+        "scripts/output.py" 
+
+rule run_inference:
+    """
+    Run data through GADMA2 for masked and unmasked params files
+    """
+    input: 
+        params = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}.params", 
+        params_masked = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_masked.params",
+        sfs = ancient("results/{refGenome}/{analysis}_analysis{spec}/{prefix}.sfs"), 
+        sfs_masked = ancient("results/{refGenome}/{analysis}_analysis{spec}/{prefix}_masked.sfs")
+    output: 
+        result = directory("results/{refGenome}/{analysis}_analysis{spec}/{prefix}_inference.done"),
+        result_masked = directory("results/{refGenome}/{analysis}_analysis{spec}/{prefix}_inference_masked.done"),
+        best_demes = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_inference.done/best_logLL_model_demes_code.py.yml",
+        gadma_log = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_inference.done/GADMA.log",
+        best_demes_masked = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_inference_masked.done/best_logLL_model_demes_code.py.yml",
+        gadma_log_masked = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_inference_masked.done/GADMA.log",
+        model_fit = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_inference.done/best_logLL_model.png",
+        model_fit_masked = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_inference_masked.done/best_logLL_model.png",
+    conda: 
+        "envs/gadma_env.yml"
+    shell: 
+        """
+        gadma -p {input.params} -o {output.result}
+        gadma -p {input.params_masked} -o {output.result_masked}
+        """
+
+rule mask_sfs:
+    """
+    Mask SFS
+    """
+    input: 
+        sfs = ancient("results/{refGenome}/{analysis}_analysis{spec}/{prefix}.sfs")
+    params:
+        pops = config['populations'],
+        prefix = config['final_prefix'],
+        refGenome = config['refgenome'],
+        analysis = config['analysis'] if config['analysis'] else 'inf',
+        spec = '/' + config['spec'] if config['spec'] else []
+    output: 
+        sfs_masked = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_masked.sfs" # Make temporary
+    conda:
+        "envs/dadi_env.yml"
+    script:
+        "scripts/masking.py"
+
+rule generate_sfs:
+    """
+    Create SFS
+    """
+    input: 
+        popfile = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}.popfile.txt",
+        vcf = "results/{refGenome}/{prefix}_clean_snps.vcf.gz"
+    params:
+        pops = config['populations'],
+        prefix = config['final_prefix'],
+        refGenome = config['refgenome'],
+        analysis = config['analysis'] if config['analysis'] else 'inf',
+        spec = '/' + config['spec'] if config['spec'] else [],
+        sfsPrefix = "-".join(config['populations'].split('/')),
+        sizes = ",".join(config['projections'].split('/')) if config['projections'] else lambda w, input: ','.join(map(str, {element: sum(element in line for line in open(input[0], "r")) for element in config['populations'].split('/')}.values()))
+    output: 
+        sfs = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}.sfs"
+    conda:
+        "envs/sfs_env.yml"
+    shell:
+        """
+        /scratch2/cyrus/snpArcher/workflow/modules/inference_channel/scripts/easySFS.py -i results/{wildcards.refGenome}/{wildcards.prefix}_clean_snps.vcf.gz -p results/{wildcards.refGenome}/{wildcards.analysis}_analysis{wildcards.spec}/{wildcards.prefix}.popfile.txt -o results/{wildcards.refGenome}/{wildcards.analysis}_analysis{wildcards.spec}/ -a -f --proj {params.sizes} # Hardcoded, baddddd
+        mv results/{wildcards.refGenome}/{wildcards.analysis}_analysis{wildcards.spec}/dadi/{params.sfsPrefix}.sfs results/{wildcards.refGenome}/{wildcards.analysis}_analysis{wildcards.spec}/{wildcards.prefix}.sfs
+        rm -r results/{wildcards.refGenome}/{wildcards.analysis}_analysis{wildcards.spec}/fastsimcoal2
+        rm -r results/{wildcards.refGenome}/{wildcards.analysis}_analysis{wildcards.spec}/dadi
+        """ 
+
+rule create_popfile:
+    """
+    Create popfile by coordinate/PC filtering, in the future done with population labels instead (ideally)
+    """
+    input:
+        eigenvec = "results/{refGenome}/QC/{prefix}.eigenvec" if config['coordinate_bounds'] and config['pc_bounds'] else [],
+        coords = "results/{refGenome}/QC/{prefix}.coords.txt" if config['coordinate_bounds'] and config['pc_bounds'] else []
+    params:
+        prefix = config['final_prefix'],
+        refGenome = config['refgenome'],
+        analysis = config['analysis'] if config['analysis'] else 'inf',
+        spec = '/' + config['spec'] if config['spec'] else [],
+        pops = config['populations'],
+        coord_bounds = config['coordinate_bounds'],
+        pc_bounds = config['pc_bounds']
+    output: 
+        popfile = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}.popfile.txt",
+        popfile_mixed = temp("results/{refGenome}/{analysis}_analysis{spec}/{prefix}.popfile_mixed.txt")
+    script: 
+        "scripts/popfile.py"
+
+rule create_paramsfiles:
+    """
+    Create params files
+    """
+    input: 
+        bed = "results/{refGenome}/{prefix}_callable_sites.bed"
+    params:
+        prefix = config['final_prefix'],
+        analysis = config['analysis'] or 'inf',
+        spec = '/' + config['spec'] if config['spec'] else [],
+        refGenome = config['refgenome'],
+        pops = config['populations'],
+        mutation_rate = config['mutation_rate'],
+        generation_time = config['generation_time'],
+        repeats = config['repeats']
+    output:
+        params = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}.params",
+        params_masked = "results/{refGenome}/{analysis}_analysis{spec}/{prefix}_masked.params",
+    script: 
+        "scripts/params.py"
